@@ -123,7 +123,7 @@ app.get('/', (req, res) => {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ICA2S 2026 - Scholar Number: 24U022026</title>
+    <title>ICA2S 2026 - Scholar Number: 24U022007</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         html { scroll-behavior: smooth; }
@@ -180,8 +180,8 @@ app.get('/', (req, res) => {
         <div class="max-w-2xl mx-auto px-4">
             <p class="opacity-70 mb-4">&copy; 2026 International Conference on Advanced Systems</p>
             <div class="border-t border-blue-800 pt-4 mt-4">
-                <p class="text-lg font-semibold text-yellow-400">Manas Kumar</p>
-                <p class="text-sm opacity-80 mt-1">Scholar Number: <span class="font-mono">24U022026</span></p>
+                <p class="text-lg font-semibold text-yellow-400">Ishan Jaiswal</p>
+                <p class="text-sm opacity-80 mt-1">Scholar Number: <span class="font-mono">24U022007</span></p>
             </div>
         </div>
     </footer>
