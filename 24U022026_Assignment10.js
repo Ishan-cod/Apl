@@ -1,79 +1,46 @@
 const express = require('express');
 const sqlite3 = require('sqlite3').verbose();
 const session = require('express-session');
+const fs = require('fs');
 const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Connect to SQLite Database
+// --- DATABASE INITIALIZATION ---
 const db = new sqlite3.Database('./database.sqlite', (err) => {
-    if (err) {
-        console.error("Database connection error:", err.message);
-    } else {
-        console.log("Connected to SQLite database.");
-        
-        db.run(`
-            CREATE TABLE IF NOT EXISTS Users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT UNIQUE NOT NULL,
-                password TEXT NOT NULL
-            )
-        `);
-        
-        db.run(`
-            CREATE TABLE IF NOT EXISTS ConferenceSections (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                section_name TEXT NOT NULL,
-                content TEXT NOT NULL
-            )
-        `, () => {
-            db.get("SELECT COUNT(*) as count FROM ConferenceSections", (err, row) => {
-                if (row && row.count === 0) {
-                    const stmt = db.prepare("INSERT INTO ConferenceSections (section_name, content) VALUES (?, ?)");
-                    const sections = [
-                        ['Home', 'Welcome to the 2026 ICA2S. This premier event brings together researchers to explore technology.'],
-                        ['Committee', 'Steering Committee: Dr. Aris Thompson, Dr. Sarah Jenkins.'],
-                        ['Important Dates', 'Conference Dates: February 26-28, 2026.'],
-                        ['Speakers', 'Dr. Elena Rodriguez, Mr. Julian Vane.'],
-                        ['Workshop', 'Cloud-Native Architectures by Google and AWS.'],
-                        ['Submission', 'Submit via EasyChair portal using IEEE template.'],
-                        ['Special Session', 'Cyber-Physical Systems in Healthcare.'],
-                        ['Registration', 'Regular Author: $450, Student: $250.'],
-                        ['Sponsorship', 'Diamond, Gold, and Silver tiers available.'],
-                        ['Contact', 'info@ica2s.vercel.app | +1 (555) 123-4567']
-                    ];
-                    sections.forEach(s => stmt.run(s[0], s[1]));
-                    stmt.finalize();
-                }
-            });
+    if (err) return console.error(err.message);
+    console.log("Connected to ICA2S Database [Registry: 24U022007]");
+    
+    // Auto-run schema.sql on startup if it exists
+    const schemaPath = path.join(__dirname, 'schema.sql');
+    if (fs.existsSync(schemaPath)) {
+        const schema = fs.readFileSync(schemaPath, 'utf8');
+        db.exec(schema, (err) => {
+            if (err) console.error("Schema Error:", err.message);
+            else console.log("Database Schema Synchronized.");
         });
     }
 });
 
-// Middleware
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 app.use(session({
-    secret: 'ica2s_secret_key',
+    secret: 'ica2s_auth_24u022007',
     resave: false,
     saveUninitialized: false
 }));
 
-// --- API ENDPOINTS ---
+// --- API ROUTES ---
 
 app.get('/api/sections', (req, res) => {
-    db.all("SELECT * FROM ConferenceSections", [], (err, rows) => {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json(rows);
-    });
+    db.all("SELECT * FROM ConferenceSections", (err, rows) => res.json(rows));
 });
 
 app.post('/api/register', (req, res) => {
     const { username, password } = req.body;
-    db.run("INSERT INTO Users (username, password) VALUES (?, ?)", [username, password], function(err) {
-        if (err) return res.status(400).json({ success: false, message: "Username exists" });
-        res.json({ success: true, message: "Registration successful." });
+    db.run("INSERT INTO Users (username, password, full_name) VALUES (?, ?, ?)", [username, password, username], (err) => {
+        if (err) return res.status(400).json({ success: false, message: "User exists." });
+        res.json({ success: true });
     });
 });
 
@@ -82,214 +49,250 @@ app.post('/api/login', (req, res) => {
     db.get("SELECT * FROM Users WHERE username = ? AND password = ?", [username, password], (err, row) => {
         if (row) {
             req.session.user = row.username;
-            res.json({ success: true, message: "Login successful", username: row.username });
+            res.json({ success: true, username: row.username });
         } else {
             res.status(401).json({ success: false, message: "Invalid credentials" });
         }
     });
 });
 
-// NEW: Get User Details
 app.get('/api/user-details', (req, res) => {
-    if (!req.session.user) return res.status(401).json({ error: "Not logged in" });
-    db.get("SELECT username, password FROM Users WHERE username = ?", [req.session.user], (err, row) => {
-        res.json(row);
-    });
+    if (!req.session.user) return res.status(401).json({ error: "Unauthorized" });
+    db.get("SELECT * FROM Users WHERE username = ?", [req.session.user], (err, row) => res.json(row));
 });
 
-// NEW: Update User Details
 app.post('/api/update-account', (req, res) => {
     if (!req.session.user) return res.status(401).json({ error: "Unauthorized" });
-    const { newUsername, newPassword } = req.body;
+    const { username, password, full_name, email, bio } = req.body;
     const oldUsername = req.session.user;
 
-    db.run("UPDATE Users SET username = ?, password = ? WHERE username = ?", [newUsername, newPassword, oldUsername], function(err) {
-        if (err) return res.status(500).json({ success: false, message: "Update failed. Username might be taken." });
-        req.session.user = newUsername; // Update session with new name
-        res.json({ success: true, message: "Profile updated successfully!" });
-    });
+    db.run(
+        "UPDATE Users SET username = ?, password = ?, full_name = ?, email = ?, bio = ? WHERE username = ?",
+        [username, password, full_name, email, bio, oldUsername],
+        function(err) {
+            if (err) return res.status(500).json({ success: false, message: "Update conflict" });
+            req.session.user = username;
+            res.json({ success: true, message: "Profile Updated Successfully" });
+        }
+    );
 });
 
 app.post('/api/logout', (req, res) => {
     req.session.destroy();
-    res.json({ success: true, message: "Logged out" });
+    res.json({ success: true });
 });
 
 app.get('/api/status', (req, res) => {
-    if (req.session.user) res.json({ loggedIn: true, username: req.session.user });
-    else res.json({ loggedIn: false });
+    res.json({ loggedIn: !!req.session.user, username: req.session.user || null });
 });
 
-// --- FRONTEND ---
+// --- FRONTEND UI ---
 app.get('/', (req, res) => {
     res.send(`
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta name="scholar-id" content="24U022007">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ICA2S 2026 - My Account</title>
+    <title>ICA2S 2026 | Researcher Portal</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;600;800&display=swap" rel="stylesheet">
     <style>
-        body { font-family: 'Plus Jakarta Sans', sans-serif; }
-        .glass-nav { background: rgba(15, 23, 42, 0.8); backdrop-filter: blur(12px); border-bottom: 1px solid rgba(255,255,255,0.1); }
-        .hero-gradient { background: radial-gradient(circle at top right, #1e1b4b, #0f172a); }
-        .modal { display: none; background: rgba(0,0,0,0.8); backdrop-filter: blur(4px); }
+        body { font-family: 'Plus Jakarta Sans', sans-serif; background: #0b0f1a; color: #cbd5e1; }
+        .glass-nav { background: rgba(11, 15, 26, 0.85); backdrop-filter: blur(20px); border-bottom: 1px solid rgba(255,255,255,0.05); }
+        .hero-gradient { background: radial-gradient(circle at 70% 20%, #1e1b4b 0%, #0b0f1a 100%); }
+        .card-base { background: #111827; border: 1px solid rgba(255,255,255,0.05); border-radius: 2rem; }
+        .input-field { background: #161b2a; border: 1px solid #1e293b; color: white; padding: 0.85rem 1.25rem; border-radius: 0.75rem; width: 100%; outline: none; transition: 0.3s; }
+        .input-field:focus { border-color: #6366f1; box-shadow: 0 0 0 4px rgba(99,102,241,0.1); }
+        .modal { display: none; background: rgba(0,0,0,0.8); backdrop-filter: blur(12px); position: fixed; inset: 0; z-index: 100; align-items: center; justify-content: center; }
         .modal.active { display: flex; }
     </style>
 </head>
-<body class="bg-[#0f172a] text-slate-200">
+<body>
 
     <nav class="fixed top-0 w-full z-50 glass-nav">
-        <div class="max-w-7xl mx-auto px-6 h-20 flex justify-between items-center">
-            <div class="flex flex-col cursor-pointer" onclick="window.location.reload()">
-                <span class="font-extrabold text-2xl tracking-tight text-white">ICA2S <span class="text-indigo-500">2026</span></span>
+        <div class="max-w-7xl mx-auto px-8 h-20 flex justify-between items-center">
+            <div class="flex flex-col cursor-pointer" onclick="location.reload()">
+                <span class="font-extrabold text-2xl text-white tracking-tight">ICA2S <span class="text-indigo-500">2026</span></span>
+                <span class="text-[9px] uppercase tracking-[0.3em] text-slate-500 font-bold">Node-Registry: 24U022007</span>
             </div>
-
-            <div class="hidden md:flex space-x-8 text-xs font-bold uppercase tracking-widest items-center">
-                <a href="#" onclick="loadContent()" class="hover:text-indigo-400 transition-colors">Home</a>
-                <a href="javascript:showAccount()" id="nav-account" class="hidden text-emerald-400 hover:text-emerald-300">My Account</a>
-                
-                <div id="desktop-auth-container" class="pl-6 border-l border-slate-700">
-                    <button onclick="toggleModal()" id="btn-login" class="bg-indigo-600 text-white px-5 py-2.5 rounded-full">Login</button>
-                    <div id="user-profile" class="hidden flex items-center gap-4">
-                        <span id="welcome-msg" class="text-indigo-300 italic"></span>
-                        <button onclick="handleLogout()" class="text-slate-400 hover:text-red-400 transition underline">Logout</button>
+            
+            <div class="flex space-x-8 text-xs font-bold uppercase tracking-widest items-center">
+                <a href="#" onclick="loadContent()" class="hover:text-indigo-400 transition">Home</a>
+                <a href="javascript:showAccount()" id="nav-account" class="hidden text-emerald-400 hover:text-emerald-300">My Profile</a>
+                <div id="auth-ui">
+                    <button onclick="toggleModal()" id="btn-login" class="bg-indigo-600 px-6 py-2.5 rounded-full text-white hover:bg-indigo-500 transition shadow-lg shadow-indigo-900/20">Login</button>
+                    <div id="user-profile" class="hidden flex items-center gap-6">
+                        <span id="welcome-msg" class="text-indigo-300 italic tracking-wide"></span>
+                        <button onclick="handleLogout()" class="text-slate-500 hover:text-red-400 transition underline decoration-slate-700 underline-offset-4 text-[10px]">Logout</button>
                     </div>
                 </div>
             </div>
         </div>
     </nav>
 
-    <header class="pt-40 pb-20 hero-gradient text-center">
-        <h1 id="page-title" class="text-5xl font-extrabold text-white mb-4">Future of Technology.</h1>
+    <header class="pt-48 pb-24 hero-gradient text-center">
+        <h1 id="page-title" class="text-5xl md:text-7xl font-extrabold text-white tracking-tighter mb-4">Future of Systems.</h1>
+        <p class="text-slate-400 max-w-lg mx-auto text-sm md:text-base px-6">Connecting global innovators at the intersection of intelligence and engineering.</p>
     </header>
 
-    <main id="main-target" class="px-6 max-w-4xl mx-auto pb-20"></main>
+    <main id="main-target" class="px-6 max-w-5xl mx-auto pb-32"></main>
 
-    <div id="auth-modal" class="modal fixed inset-0 z-[100] items-center justify-center p-4">
-        <div class="bg-slate-900 border border-slate-800 rounded-3xl w-full max-w-md p-8 relative">
-            <button onclick="toggleModal()" class="absolute top-6 right-6 text-slate-500 text-2xl">&times;</button>
-            <h2 id="modal-title" class="text-3xl font-bold text-white mb-8 text-center">Welcome Back</h2>
-            <form id="auth-form" onsubmit="handleAuth(event)">
-                <input type="text" id="username" placeholder="Username" required class="w-full bg-slate-800 border border-slate-700 p-3 rounded-xl mb-4 text-white">
-                <input type="password" id="password" placeholder="Password" required class="w-full bg-slate-800 border border-slate-700 p-3 rounded-xl mb-6 text-white">
-                <p id="auth-error" class="text-red-400 text-sm mb-4 hidden"></p>
-                <button type="submit" id="submit-btn" class="w-full bg-indigo-600 text-white font-bold py-4 rounded-xl">Sign In</button>
+    <div id="auth-modal" class="modal">
+        <div class="card-base w-full max-w-md p-10 relative">
+            <h2 id="modal-title" class="text-3xl font-bold mb-2 text-white text-center">Secure Login</h2>
+            <p class="text-slate-500 text-center mb-10 text-xs uppercase tracking-widest">ICA2S Verification Required</p>
+            <form onsubmit="handleAuth(event)" class="space-y-4">
+                <input type="text" id="username" placeholder="Username" required class="input-field">
+                <input type="password" id="password" placeholder="Password" required class="input-field">
+                <button type="submit" class="w-full bg-indigo-600 text-white font-bold py-4 rounded-xl mt-6 hover:bg-indigo-500 transition">Enter Portal</button>
             </form>
-            <button onclick="toggleMode()" id="toggle-btn" class="w-full mt-4 text-indigo-400 text-sm">Create an account</button>
+            <button onclick="toggleMode()" id="toggle-btn" class="w-full mt-6 text-indigo-400 text-xs font-bold uppercase tracking-widest">Create Account</button>
+            <button onclick="toggleModal()" class="w-full mt-4 text-slate-700 text-[10px] uppercase font-bold">Discard</button>
         </div>
     </div>
 
     <script>
         let isLoginMode = true;
 
+        async function api(act, method = 'GET', body = null) {
+            const opt = { method, headers: { 'Content-Type': 'application/json' } };
+            if(body) opt.body = JSON.stringify(body);
+            const res = await fetch(\`/api/\${act}\`, opt);
+            return res.json();
+        }
+
         async function loadContent() {
-            document.getElementById('page-title').innerText = "Future of Technology.";
-            const res = await fetch('/api/sections');
-            const data = await res.json();
-            const target = document.getElementById('main-target');
-            target.innerHTML = data.map(item => \`
-                <section class="mb-12">
-                    <h2 class="text-indigo-500 font-black uppercase tracking-widest mb-4">\${item.section_name}</h2>
-                    <div class="bg-slate-900/40 p-8 rounded-3xl border border-slate-800">\${item.content}</div>
-                </section>
-            \`).join('');
+            document.getElementById('page-title').innerText = "Future of Systems.";
+            const data = await api('sections');
+            document.getElementById('main-target').innerHTML = \`
+                <div class="grid md:grid-cols-2 gap-8">
+                    \${data.map(item => \`
+                        <div class="card-base p-8 hover:border-indigo-500/30 transition-all duration-500 group">
+                            <h2 class="text-[10px] font-black uppercase tracking-[0.4em] text-indigo-500 mb-6 group-hover:text-indigo-400">\${item.section_name}</h2>
+                            <div class="prose prose-invert prose-sm text-slate-400 leading-relaxed">\${item.content}</div>
+                        </div>
+                    \`).join('')}
+                </div>
+            \`;
         }
 
         async function showAccount() {
-            document.getElementById('page-title').innerText = "My Account Settings";
-            const res = await fetch('/api/user-details');
-            const user = await res.json();
+            const user = await api('user-details');
+            document.getElementById('page-title').innerText = "My Researcher Profile";
             
-            const target = document.getElementById('main-target');
-            target.innerHTML = \`
-                <div class="bg-slate-900 border border-slate-800 p-10 rounded-[2rem] max-w-2xl mx-auto shadow-2xl">
-                    <h3 class="text-xl font-bold mb-6 text-indigo-400">Update Your Details</h3>
-                    <form onsubmit="handleUpdate(event)" class="space-y-6">
-                        <div>
-                            <label class="block text-xs font-bold text-slate-500 uppercase mb-2">Current Username</label>
-                            <input type="text" id="update-username" value="\${user.username}" class="w-full bg-slate-800 border border-slate-700 p-4 rounded-xl text-white">
+            document.getElementById('main-target').innerHTML = \`
+                <div class="grid md:grid-cols-12 gap-10">
+                    <div class="md:col-span-4 space-y-6">
+                        <div class="card-base p-8 text-center bg-indigo-900/5">
+                            <div class="w-24 h-24 bg-gradient-to-tr from-indigo-600 to-indigo-400 rounded-[2rem] mx-auto mb-6 flex items-center justify-center text-4xl font-bold text-white shadow-2xl shadow-indigo-500/20">
+                                \${(user.full_name || user.username)[0].toUpperCase()}
+                            </div>
+                            <h3 class="font-extrabold text-white text-xl">\${user.full_name || user.username}</h3>
+                            <p class="text-indigo-400 text-[10px] font-bold uppercase tracking-widest mt-2">Verified Academic Member</p>
+                            <div class="mt-8 pt-8 border-t border-white/5 flex justify-between text-[10px] font-bold text-slate-500 uppercase">
+                                <span>Joined</span>
+                                <span class="text-slate-300">\${user.created_at.split(' ')[0]}</span>
+                            </div>
                         </div>
-                        <div>
-                            <label class="block text-xs font-bold text-slate-500 uppercase mb-2">New Password</label>
-                            <input type="password" id="update-password" value="\${user.password}" class="w-full bg-slate-800 border border-slate-700 p-4 rounded-xl text-white">
+                        <div class="card-base p-6 border-emerald-500/10 bg-emerald-500/5">
+                            <h4 class="text-[10px] font-black text-emerald-400 uppercase tracking-widest mb-3">Submission Record</h4>
+                            <p class="text-xs text-slate-400 leading-relaxed">No active submissions found for Scholar ID 24U022007. Papers will appear here once peer-reviewed.</p>
                         </div>
-                        <button type="submit" class="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-4 rounded-xl transition">Save Changes</button>
-                    </form>
-                    <p id="update-msg" class="mt-4 text-center hidden"></p>
+                    </div>
+
+                    <div class="md:col-span-8">
+                        <div class="card-base p-10">
+                            <h3 class="text-2xl font-bold text-white mb-8">Personal Information</h3>
+                            <form onsubmit="handleUpdate(event)" class="space-y-6">
+                                <div class="grid md:grid-cols-2 gap-6">
+                                    <div>
+                                        <label class="text-[10px] font-bold text-slate-500 uppercase ml-2 mb-2 block">Username / Handle</label>
+                                        <input type="text" id="up-username" value="\${user.username}" class="input-field" required>
+                                    </div>
+                                    <div>
+                                        <label class="text-[10px] font-bold text-slate-500 uppercase ml-2 mb-2 block">Full Legal Name</label>
+                                        <input type="text" id="up-fullname" value="\${user.full_name || ''}" class="input-field" placeholder="e.g. Ishan Kumar">
+                                    </div>
+                                </div>
+                                <div>
+                                    <label class="text-[10px] font-bold text-slate-500 uppercase ml-2 mb-2 block">Contact Email</label>
+                                    <input type="email" id="up-email" value="\${user.email || ''}" class="input-field" placeholder="researcher@iiit.edu">
+                                </div>
+                                <div>
+                                    <label class="text-[10px] font-bold text-slate-500 uppercase ml-2 mb-2 block">Research Biography</label>
+                                    <textarea id="up-bio" class="input-field h-32 resize-none" placeholder="Tell us about your technical expertise...">\${user.bio || ''}</textarea>
+                                </div>
+                                <div class="pt-4 border-t border-white/5">
+                                    <label class="text-[10px] font-bold text-slate-500 uppercase ml-2 mb-2 block text-indigo-400">Security Credentials</label>
+                                    <input type="password" id="up-password" value="\${user.password}" class="input-field border-indigo-500/20" required>
+                                </div>
+                                <button class="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-5 rounded-2xl transition shadow-xl shadow-indigo-900/30">Synchronize Global Profile</button>
+                            </form>
+                            <p id="up-msg" class="mt-6 text-center text-sm hidden font-bold"></p>
+                        </div>
+                    </div>
                 </div>
             \`;
         }
 
         async function handleUpdate(e) {
             e.preventDefault();
-            const newUsername = document.getElementById('update-username').value;
-            const newPassword = document.getElementById('update-password').value;
-            const res = await fetch('/api/update-account', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ newUsername, newPassword })
+            const res = await api('update-account', 'POST', {
+                username: document.getElementById('up-username').value,
+                password: document.getElementById('up-password').value,
+                full_name: document.getElementById('up-fullname').value,
+                email: document.getElementById('up-email').value,
+                bio: document.getElementById('up-bio').value
             });
-            const result = await res.json();
-            const msgEl = document.getElementById('update-msg');
-            msgEl.innerText = result.message;
-            msgEl.className = \`mt-4 text-center \${result.success ? 'text-emerald-400' : 'text-red-400'}\`;
-            msgEl.classList.remove('hidden');
-            if(result.success) checkAuthStatus();
+            const msg = document.getElementById('up-msg');
+            msg.innerText = res.message;
+            msg.className = "mt-6 text-center text-sm font-bold " + (res.success ? "text-emerald-400" : "text-red-400");
+            msg.classList.remove('hidden');
+            if(res.success) checkAuthStatus();
         }
 
         async function checkAuthStatus() {
-            const res = await fetch('/api/status');
-            const data = await res.json();
-            const isAuth = data.loggedIn;
-            document.getElementById('btn-login').classList.toggle('hidden', isAuth);
-            document.getElementById('user-profile').classList.toggle('hidden', !isAuth);
-            document.getElementById('nav-account').classList.toggle('hidden', !isAuth);
-            if(isAuth) document.getElementById('welcome-msg').innerText = "Hello, " + data.username;
+            const data = await api('status');
+            document.getElementById('btn-login').classList.toggle('hidden', data.loggedIn);
+            document.getElementById('user-profile').classList.toggle('hidden', !data.loggedIn);
+            document.getElementById('nav-account').classList.toggle('hidden', !data.loggedIn);
+            if(data.loggedIn) document.getElementById('welcome-msg').innerText = "Active: " + data.username;
         }
 
         async function handleAuth(e) {
             e.preventDefault();
-            const username = document.getElementById('username').value;
-            const password = document.getElementById('password').value;
-            const endpoint = isLoginMode ? '/api/login' : '/api/register';
-            const res = await fetch(endpoint, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ username, password })
+            const res = await api(isLoginMode ? 'login' : 'register', 'POST', {
+                username: document.getElementById('username').value,
+                password: document.getElementById('password').value
             });
-            const result = await res.json();
-            if (result.success) {
+            if (res.success) {
                 if (isLoginMode) { toggleModal(); checkAuthStatus(); }
-                else { alert("Registered! Now please login."); toggleMode(); }
-            } else {
-                document.getElementById('auth-error').innerText = result.message;
-                document.getElementById('auth-error').classList.remove('hidden');
-            }
+                else { alert("Registry Successful. Please Login."); toggleMode(); }
+            } else alert(res.message);
         }
 
-        async function handleLogout() {
-            await fetch('/api/logout', { method: 'POST' });
-            window.location.reload();
-        }
-
+        async function handleLogout() { await api('logout', 'POST'); location.reload(); }
         function toggleModal() { document.getElementById('auth-modal').classList.toggle('active'); }
         function toggleMode() {
             isLoginMode = !isLoginMode;
-            document.getElementById('modal-title').innerText = isLoginMode ? 'Welcome Back' : 'Create Account';
-            document.getElementById('toggle-btn').innerText = isLoginMode ? 'Create an account' : 'Back to Login';
+            document.getElementById('modal-title').innerText = isLoginMode ? 'Secure Login' : 'New Registry';
+            document.getElementById('toggle-btn').innerText = isLoginMode ? 'Create Account' : 'Back to Login';
         }
 
         loadContent();
         checkAuthStatus();
     </script>
+
+    <footer class="text-center py-20 border-t border-white/5 text-[9px] uppercase tracking-[0.6em] text-slate-600">
+        ICA2S 2026 Distribution System | Ref: 24U022007 | IIIT Project 10
+    </footer>
 </body>
 </html>
     `);
 });
 
 app.listen(PORT, () => {
-    console.log(`Server is running on http://localhost:${PORT}`);
+    console.log(\`ICA2S Core running at http://localhost:\${PORT}\`);
 });
